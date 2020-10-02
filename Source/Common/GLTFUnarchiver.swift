@@ -69,30 +69,29 @@ public class GLTFUnarchiver {
         decoder.userInfo[GLTFExtensionCodingUserInfoKey] = _extensions
         var jsonData = data
         
-        let magic: UInt32 = data.subdata(in: 0..<4).withUnsafeBytes { $0.pointee }
-        if magic == glbMagic {
-            let version: UInt32 = data.subdata(in: 4..<8).withUnsafeBytes { $0.pointee }
-            if version != 2 {
-                throw GLTFUnarchiveError.NotSupported("version \(version) is not supported")
+        if let magic = data.subdata(in: 0..<4).withUnsafeBytes({ $0.bindMemory(to: UInt32.self) }).baseAddress?.pointee, magic == glbMagic {
+            guard let version = data.subdata(in: 4..<8).withUnsafeBytes({ $0.bindMemory(to: UInt32.self) }).baseAddress?.pointee, version == 2 else {
+                throw GLTFUnarchiveError.NotSupported("version not set or not supported")
             }
-            let length: UInt32 = data.subdata(in: 8..<12).withUnsafeBytes { $0.pointee }
-            
-            let chunk0Length: UInt32 = data.subdata(in: 12..<16).withUnsafeBytes { $0.pointee }
-            let chunk0Type: UInt32 = data.subdata(in: 16..<20).withUnsafeBytes { $0.pointee }
-            if chunk0Type != chunkTypeJSON {
-                throw GLTFUnarchiveError.NotSupported("chunkType \(chunk0Type) is not supported")
+            guard let chunk0Type = data.subdata(in: 16..<20).withUnsafeBytes({ $0.bindMemory(to: UInt32.self).baseAddress?.pointee }), chunk0Type == chunkTypeJSON else {
+                throw GLTFUnarchiveError.NotSupported("chunkType not set or not supported")
             }
-            let chunk0EndPos = 20 + Int(chunk0Length)
-            jsonData = data.subdata(in: 20..<chunk0EndPos)
             
-            if length > chunk0EndPos {
-                let chunk1Length: UInt32 = data.subdata(in: chunk0EndPos..<chunk0EndPos+4).withUnsafeBytes { $0.pointee }
-                let chunk1Type: UInt32 = data.subdata(in: chunk0EndPos+4..<chunk0EndPos+8).withUnsafeBytes { $0.pointee }
-                if chunk1Type != chunkTypeBIN {
-                    throw GLTFUnarchiveError.NotSupported("chunkType \(chunk1Type) is not supported")
+            if let chunk0Length = data.subdata(in: 12..<16).withUnsafeBytes({ $0.bindMemory(to: UInt32.self).baseAddress?.pointee }) {
+                let chunk0EndPos = 20 + Int(chunk0Length)
+                
+                if let length = data.subdata(in: 8..<12).withUnsafeBytes({ $0.bindMemory(to: UInt32.self).baseAddress?.pointee }), length > chunk0EndPos {
+                    jsonData = data.subdata(in: 20..<chunk0EndPos)
+                    guard let chunk1Type = data.subdata(in: chunk0EndPos+4..<chunk0EndPos+8)
+                            .withUnsafeBytes({ $0.bindMemory(to: UInt32.self).baseAddress?.pointee }), chunk1Type == chunkTypeBIN else {
+                        throw GLTFUnarchiveError.NotSupported("chunkType not set or not supported")
+                    }
+                    if let chunk1Length = data.subdata(in: chunk0EndPos..<chunk0EndPos+4)
+                        .withUnsafeBytes({ $0.bindMemory(to: UInt32.self).baseAddress?.pointee }) {
+                        let chunk1EndPos = chunk0EndPos + 8 + Int(chunk1Length)
+                        self.bin = data.subdata(in: chunk0EndPos+8..<chunk1EndPos)
+                    }
                 }
-                let chunk1EndPos = chunk0EndPos + 8 + Int(chunk1Length)
-                self.bin = data.subdata(in: chunk0EndPos+8..<chunk1EndPos)
             }
         }
         
@@ -190,6 +189,8 @@ public class GLTFUnarchiver {
             return count / 3
         case .triangleStrip:
             return count - 2
+        @unknown default:
+            return 0
         }
     }
     
@@ -218,9 +219,10 @@ public class GLTFUnarchiver {
             guard let perspective = glCamera.perspective else {
                 throw GLTFUnarchiveError.DataInconsistent("loadCamera: perspective is not defined")
             }
-            camera.yFov = Double(perspective.yfov) * 180.0 / Double.pi
-            if let aspectRatio = perspective.aspectRatio {
-                camera.xFov = camera.yFov * Double(aspectRatio)
+            camera.projectionDirection = .vertical
+            camera.fieldOfView = CGFloat(perspective.yfov) * 180.0 / CGFloat.pi
+            if let ratio = perspective.aspectRatio {
+                camera.orthographicScale = Double(ratio)
             }
             camera.zNear = Double(perspective.znear)
             camera.zFar = Double(perspective.zfar ?? Float.infinity)
@@ -334,12 +336,13 @@ public class GLTFUnarchiver {
             throw GLTFUnarchiveError.DataInconsistent("iterateBufferView: offset (\(offset)) + byteStride (\(byteStride)) * count (\(count)) shoule be equal or less than byteLength (\(glBufferView.byteLength)))")
         }
         
-        bufferView.withUnsafeBytes { (pointer: UnsafePointer<UInt8>) in
-            var p = pointer.advanced(by: offset)
-            for _ in 0..<count {
-                block(UnsafeRawPointer(p))
-                p = p.advanced(by: byteStride)
-            }
+        guard let pointer = bufferView.withUnsafeBytes({ $0.bindMemory(to: UInt8.self).baseAddress }) else {
+            throw GLTFUnarchiveError.DataInconsistent("bufferView \(bufferView) cannot be bind to UInt8")
+        }
+        var p = pointer.advanced(by: offset)
+        for _ in 0..<count {
+            block(UnsafeRawPointer(p))
+            p = p.advanced(by: byteStride)
         }
     }
     
@@ -368,19 +371,17 @@ public class GLTFUnarchiver {
         
         var indexData = Data(capacity: dataSize)
         
-        data.withUnsafeBytes { (s: UnsafePointer<UInt8>) in
-            indexData.withUnsafeMutableBytes { (d: UnsafeMutablePointer<UInt8>) in
-                let srcStep = stride - size
-                var srcPos = offset
-                var dstPos = 0
-                for _ in 0..<count {
-                    for _ in 0..<size {
-                        d[dstPos] = s[srcPos]
-                        srcPos += 1
-                        dstPos += 1
-                    }
-                    srcPos += srcStep
+        if let s = data.withUnsafeBytes({ $0.bindMemory(to: UInt8.self).baseAddress }), let d = indexData.withUnsafeMutableBytes({ $0.bindMemory(to: UInt8.self).baseAddress }) {
+            let srcStep = stride - size
+            var srcPos = offset
+            var dstPos = 0
+            for _ in 0..<count {
+                for _ in 0..<size {
+                    d[dstPos] = s[srcPos]
+                    srcPos += 1
+                    dstPos += 1
                 }
+                srcPos += srcStep
             }
         }
         return indexData
@@ -1441,7 +1442,7 @@ public class GLTFUnarchiver {
         let glAccessor = accessors[index]
         
         let vectorCount = glAccessor.count
-        guard let usesFloatComponents = usesFloatComponentsMap[glAccessor.componentType] else {
+        guard usesFloatComponentsMap[glAccessor.componentType] != nil else {
             throw GLTFUnarchiveError.NotSupported("loadInverseBindMatrices: user defined accessor.componentType is not supported")
         }
         guard glAccessor.type == "MAT4" else {
@@ -1536,7 +1537,7 @@ public class GLTFUnarchiver {
                 guard let _joints = primitive.geometry?.sources(for: .boneIndices) else {
                     throw GLTFUnarchiveError.DataInconsistent("loadSkin: JOINTS_0 is not defined")
                 }
-                var boneIndices = _joints[0]
+                let boneIndices = _joints[0]
                 print("boneIndices dataStride: \(boneIndices.dataStride)")
                 
                 #if SEEMS_TO_HAVE_SKINNER_VECTOR_TYPE_BUG
@@ -1639,7 +1640,7 @@ public class GLTFUnarchiver {
             scnNode.position = createVector3(glNode.translation)
         }
         
-        if let weights = glNode.weights {
+        if glNode.weights != nil {
             // load weights
         }
         

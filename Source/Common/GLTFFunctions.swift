@@ -65,13 +65,13 @@ func createVertexArray(from source: SCNGeometrySource) throws -> [SCNVector3] {
     let dummy = SCNVector3()
     var vertices = [SCNVector3](repeating: dummy, count: source.vectorCount)
     
-    source.data.withUnsafeBytes { (p: UnsafePointer<Float32>) in
+    source.data.withUnsafeBytes { p in
         var index = source.dataOffset / 4
         let step = source.dataStride / 4
         for i in 0..<source.vectorCount {
-            let v0 = p[index + 0]
-            let v1 = p[index + 1]
-            let v2 = p[index + 2]
+            let v0 = Float(p[index + 0])
+            let v1 = Float(p[index + 1])
+            let v2 = Float(p[index + 2])
             index += step
             vertices[i] = SCNVector3(v0, v1, v2)
         }
@@ -85,7 +85,7 @@ func createIndexArray(from element: SCNGeometryElement) -> [Int] {
     var indices = [Int]()
     indices.reserveCapacity(indexCount)
     if element.bytesPerIndex == 2 {
-        element.data.withUnsafeBytes { (p: UnsafePointer<UInt16>) in
+        element.data.withUnsafeBytes { p in
             //var index = 0
             //let step = 2
             for i in 0..<indexCount {
@@ -95,7 +95,7 @@ func createIndexArray(from element: SCNGeometryElement) -> [Int] {
             }
         }
     } else if element.bytesPerIndex == 4 {
-        element.data.withUnsafeBytes { (p: UnsafePointer<UInt32>) in
+        element.data.withUnsafeBytes { p in
             //var index = 0
             //let step = 4
             for i in 0..<indexCount {
@@ -105,7 +105,7 @@ func createIndexArray(from element: SCNGeometryElement) -> [Int] {
             }
         }
     } else if element.bytesPerIndex == 8 {
-        element.data.withUnsafeBytes { (p: UnsafePointer<UInt64>) in
+        element.data.withUnsafeBytes { p in
             //var index = 0
             //let step = 8
             for i in 0..<indexCount {
@@ -126,7 +126,7 @@ func createKeyTimeArray(from data: Data, offset: Int, stride: Int, count: Int) -
     //var floatArray = [Float32]()
     //floatArray.reserveCapacity(count)
     var floatArray = [Float32](repeating: 0.0, count: count)
-    _ = floatArray.withUnsafeMutableBufferPointer {
+    floatArray.withUnsafeMutableBufferPointer {
         data.copyBytes(to: $0, from: data.startIndex + offset..<data.startIndex + offset + count * 4)
     }
     let duration = Float(floatArray.last!)
@@ -193,8 +193,8 @@ func loadImageFile(from url: URL) throws -> Image? {
 //func loadImageData(from data: Data) throws -> CGImage? {
 func loadImageData(from data: Data) throws -> Image? {
     #if SEEMS_TO_HAVE_PNG_LOADING_BUG
-        let magic: UInt64 = data.subdata(in: 0..<8).withUnsafeBytes { $0.pointee }
-        if magic == 0x0A1A0A0D474E5089 {
+        let bytes = data.subdata(in: 0..<8).withUnsafeBytes({ $0.bindMemory(to: UInt64.self) })
+        if let magic = bytes.baseAddress?.pointee, magic == 0x0A1A0A0D474E5089 {
             // PNG file
             let cgDataProvider = CGDataProvider(data: data as CFData)
             guard let cgImage = CGImage(pngDataProviderSource: cgDataProvider!, decode: nil, shouldInterpolate: false, intent: CGColorRenderingIntent.defaultIntent) else {
