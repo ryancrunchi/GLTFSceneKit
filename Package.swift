@@ -23,7 +23,16 @@ let package = Package(
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.
         // Targets can depend on other targets in this package, and on products in packages this package depends on.
         .target(name: "GLTFSceneKit",
-                path: "Source"),
+                path: "Source",
+                resources: [
+                    .process("Common/GLTFShaderModifierFragment_alphaCutoff.shader"),
+                    .process("Common/GLTFShaderModifierSurface_alphaModeBlend.shader"),
+                    .process("Common/GLTFShaderModifierSurface_doubleSidedWorkaround.shader"),
+                    .process("Common/GLTFShaderModifierSurface.shader"),
+                    .process("Common/schema/extensions/KHR_materials_pbrSpecularGlossiness/GLTFShaderModifierSurface_pbrSpecularGlossiness_doubleSidedWorkaround.shader"),
+                    .process("Common/schema/extensions/KHR_materials_pbrSpecularGlossiness/GLTFShaderModifierSurface_pbrSpecularGlossiness_texture_doubleSidedWorkaround.shader"),
+                    .process("Common/schema/extensions/KHR_materials_pbrSpecularGlossiness/GLTFShaderModifierSurface_pbrSpecularGlossiness.shader")
+                ]),
         .testTarget(
             name: "GLTFSceneKitTests",
             dependencies: ["GLTFSceneKit"]),
