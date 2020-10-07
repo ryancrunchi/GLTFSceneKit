@@ -15,6 +15,31 @@ let glbMagic = 0x46546C67 // "glTF"
 let chunkTypeJSON = 0x4E4F534A // "JSON"
 let chunkTypeBIN = 0x004E4942 // "BIN"
 
+extension Data {
+    public func toUInt32() throws -> UInt32 {
+        guard count == 4 else {
+            throw GLTFUnarchiveError.DataInconsistent("Attempt to convert UInt32 from \(self.count) bytes")
+        }
+
+        guard let address = withUnsafeBytes({ $0.baseAddress }) else {
+            throw GLTFUnarchiveError.DataInconsistent("Data has no baseAddress")
+        }
+        return address.assumingMemoryBound(to: UInt32.self).pointee
+    }
+
+    public func toUInt64() throws -> UInt64 {
+        guard count == 8 else {
+            throw GLTFUnarchiveError.DataInconsistent("Attempt to convert UInt64 from \(self.count) bytes")
+        }
+        
+        guard let address = withUnsafeBytes({ $0.baseAddress }) else {
+            throw GLTFUnarchiveError.DataInconsistent("Data has no baseAddress")
+        }
+        return address.assumingMemoryBound(to: UInt64.self).pointee
+    }
+
+}
+
 public class GLTFUnarchiver {
     private var directoryPath: URL? = nil
     private var json: GLTFGlTF! = nil
@@ -69,29 +94,29 @@ public class GLTFUnarchiver {
         decoder.userInfo[GLTFExtensionCodingUserInfoKey] = _extensions
         var jsonData = data
         
-        if let magic = data.subdata(in: 0..<4).withUnsafeBytes({ $0.bindMemory(to: UInt32.self) }).baseAddress?.pointee, magic == glbMagic {
-            guard let version = data.subdata(in: 4..<8).withUnsafeBytes({ $0.bindMemory(to: UInt32.self) }).baseAddress?.pointee, version == 2 else {
+        let magic = try data.subdata(in: 0..<4).toUInt32()
+        if magic == glbMagic {
+            let version = try data.subdata(in: 4..<8).toUInt32()
+            guard version == 2 else {
                 throw GLTFUnarchiveError.NotSupported("version not set or not supported")
             }
-            guard let chunk0Type = data.subdata(in: 16..<20).withUnsafeBytes({ $0.bindMemory(to: UInt32.self).baseAddress?.pointee }), chunk0Type == chunkTypeJSON else {
+            let chunk0Type = try data.subdata(in: 16..<20).toUInt32()
+            guard chunk0Type == chunkTypeJSON else {
                 throw GLTFUnarchiveError.NotSupported("chunkType not set or not supported")
             }
             
-            if let chunk0Length = data.subdata(in: 12..<16).withUnsafeBytes({ $0.bindMemory(to: UInt32.self).baseAddress?.pointee }) {
-                let chunk0EndPos = 20 + Int(chunk0Length)
-                
-                if let length = data.subdata(in: 8..<12).withUnsafeBytes({ $0.bindMemory(to: UInt32.self).baseAddress?.pointee }), length > chunk0EndPos {
-                    jsonData = data.subdata(in: 20..<chunk0EndPos)
-                    guard let chunk1Type = data.subdata(in: chunk0EndPos+4..<chunk0EndPos+8)
-                            .withUnsafeBytes({ $0.bindMemory(to: UInt32.self).baseAddress?.pointee }), chunk1Type == chunkTypeBIN else {
-                        throw GLTFUnarchiveError.NotSupported("chunkType not set or not supported")
-                    }
-                    if let chunk1Length = data.subdata(in: chunk0EndPos..<chunk0EndPos+4)
-                        .withUnsafeBytes({ $0.bindMemory(to: UInt32.self).baseAddress?.pointee }) {
-                        let chunk1EndPos = chunk0EndPos + 8 + Int(chunk1Length)
-                        self.bin = data.subdata(in: chunk0EndPos+8..<chunk1EndPos)
-                    }
+            let chunk0Length = try data.subdata(in: 12..<16).toUInt32()
+            let chunk0EndPos = 20 + Int(chunk0Length)
+            let length = try data.subdata(in: 8..<12).toUInt32()
+            if length > chunk0EndPos {
+                jsonData = data.subdata(in: 20..<chunk0EndPos)
+                let chunk1Type = try data.subdata(in: chunk0EndPos+4..<chunk0EndPos+8).toUInt32()
+                guard chunk1Type == chunkTypeBIN else {
+                    throw GLTFUnarchiveError.NotSupported("chunkType not set or not supported")
                 }
+                let chunk1Length = try data.subdata(in: chunk0EndPos..<chunk0EndPos+4).toUInt32()
+                let chunk1EndPos = chunk0EndPos + 8 + Int(chunk1Length)
+                self.bin = data.subdata(in: chunk0EndPos+8..<chunk1EndPos)
             }
         }
         
@@ -176,7 +201,7 @@ public class GLTFUnarchiver {
         return base64Str
     }
     
-    private func calcPrimitiveCount(ofCount count: Int, primitiveType: SCNGeometryPrimitiveType) -> Int {
+    private func calcPrimitiveCount(ofCount count: Int, primitiveType: SCNGeometryPrimitiveType) throws -> Int {
         switch primitiveType {
         case .line:
             return count / 2
@@ -190,7 +215,7 @@ public class GLTFUnarchiver {
         case .triangleStrip:
             return count - 2
         @unknown default:
-            return 0
+            throw GLTFUnarchiveError.NotSupported("Unrecognized primitive type \(primitiveType)")
         }
     }
     
@@ -222,7 +247,7 @@ public class GLTFUnarchiver {
             camera.projectionDirection = .vertical
             camera.fieldOfView = CGFloat(perspective.yfov) * 180.0 / CGFloat.pi
             if let ratio = perspective.aspectRatio {
-                camera.orthographicScale = Double(ratio)
+                camera.fieldOfView = camera.fieldOfView * CGFloat(ratio)
             }
             camera.zNear = Double(perspective.znear)
             camera.zFar = Double(perspective.zfar ?? Float.infinity)
@@ -336,14 +361,17 @@ public class GLTFUnarchiver {
             throw GLTFUnarchiveError.DataInconsistent("iterateBufferView: offset (\(offset)) + byteStride (\(byteStride)) * count (\(count)) shoule be equal or less than byteLength (\(glBufferView.byteLength)))")
         }
         
-        guard let pointer = bufferView.withUnsafeBytes({ $0.bindMemory(to: UInt8.self).baseAddress }) else {
-            throw GLTFUnarchiveError.DataInconsistent("bufferView \(bufferView) cannot be bind to UInt8")
-        }
-        var p = pointer.advanced(by: offset)
-        for _ in 0..<count {
-            block(UnsafeRawPointer(p))
-            p = p.advanced(by: byteStride)
-        }
+        bufferView.withUnsafeBytes({
+            let unsafeBufferPointer = $0.bindMemory(to: UInt8.self)
+            guard let pointer = unsafeBufferPointer.baseAddress else {
+                return
+            }
+            var p = pointer.advanced(by: offset)
+            for _ in 0..<count {
+                block(UnsafeRawPointer(p))
+                p = p.advanced(by: byteStride)
+            }
+        })
     }
     
     private func getDataStride(ofBufferViewIndex index: Int) throws -> Int? {
@@ -521,7 +549,7 @@ public class GLTFUnarchiver {
         guard let primitiveType = primitiveTypeMap[primitiveMode] else {
             throw GLTFUnarchiveError.NotSupported("loadIndexAccessor: primitve mode \(primitiveMode) is not supported")
         }
-        let primitiveCount = self.calcPrimitiveCount(ofCount: glAccessor.count, primitiveType: primitiveType)
+        let primitiveCount = try self.calcPrimitiveCount(ofCount: glAccessor.count, primitiveType: primitiveType)
         
         guard let usesFloatComponents = usesFloatComponentsMap[glAccessor.componentType] else {
             throw GLTFUnarchiveError.NotSupported("loadIndexAccessor: user defined accessor.componentType is not supported")
@@ -1036,7 +1064,7 @@ public class GLTFUnarchiver {
         material.isDoubleSided = glMaterial.doubleSided
         
         material.shaderModifiers = [
-            .surface: try! String(contentsOf: URL(fileURLWithPath: Bundle.module.path(forResource: "GLTFShaderModifierSurface", ofType: "shader")!), encoding: String.Encoding.utf8)
+            .surface: try! String(contentsOf: URL(fileURLWithPath: Bundle(for: GLTFUnarchiver.self).path(forResource: "GLTFShaderModifierSurface", ofType: "shader")!), encoding: String.Encoding.utf8)
         ]
         #if SEEMS_TO_HAVE_DOUBLESIDED_BUG
             if material.isDoubleSided {
@@ -1052,9 +1080,9 @@ public class GLTFUnarchiver {
         case "BLEND":
             material.blendMode = .alpha
             material.writesToDepthBuffer = false
-            material.shaderModifiers![.surface] = try! String(contentsOf: URL(fileURLWithPath: Bundle.module.path(forResource: "GLTFShaderModifierSurface_alphaModeBlend", ofType: "shader")!), encoding: String.Encoding.utf8)
+            material.shaderModifiers![.surface] = try! String(contentsOf: URL(fileURLWithPath: Bundle(for: GLTFUnarchiver.self).path(forResource: "GLTFShaderModifierSurface_alphaModeBlend", ofType: "shader")!), encoding: String.Encoding.utf8)
         case "MASK":
-            material.shaderModifiers![.fragment] = try! String(contentsOf: URL(fileURLWithPath: Bundle.module.path(forResource: "GLTFShaderModifierFragment_alphaCutoff", ofType: "shader")!), encoding: String.Encoding.utf8)
+            material.shaderModifiers![.fragment] = try! String(contentsOf: URL(fileURLWithPath: Bundle(for: GLTFUnarchiver.self).path(forResource: "GLTFShaderModifierFragment_alphaCutoff", ofType: "shader")!), encoding: String.Encoding.utf8)
         default:
             throw GLTFUnarchiveError.NotSupported("loadMaterial: alphaMode \(glMaterial.alphaMode) is not supported")
         }
